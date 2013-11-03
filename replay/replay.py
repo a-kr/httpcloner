@@ -188,7 +188,9 @@ class Worker(object):
                 headers_dict = {}
                 headers_dict['Content-Type'] = headers_dict_raw.get('content-type', 'text/plain')
                 headers_dict['X-Real-IP'] = headers_dict_raw.get('x-real-ip', '127.0.0.1')
-                if host_header:
+                if host_header == 'keep':
+                    headers_dict['Host'] = headers_dict_raw.get('host', 'localhost')
+                elif host_header:
                     headers_dict['Host'] = host_header
             except Exception as e:
                 logger.exception('error whlie parsing request: %s %s', e, '')
