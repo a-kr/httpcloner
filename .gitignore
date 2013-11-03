@@ -3,6 +3,8 @@
 *.lo
 *.o
 
+csniffer/cap
+
 # Compiled Dynamic libraries
 *.so
 *.dylib
@@ -11,3 +13,7 @@
 *.lai
 *.la
 *.a
+
+*.swp
+*.swo
+*.pyc
