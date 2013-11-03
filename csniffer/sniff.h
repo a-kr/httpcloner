@@ -24,9 +24,11 @@ struct SniffSettings {
     const char *filter;
     sniff_metrics_handler_fn metrics_handler;
     sniffed_pkt_handler_fn pkt_handler;
+    pcap_t *descr;
 };
 
 void start_sniffing(struct SniffSettings ss);
+void start_sniffing_loop(struct SniffSettings ss);
 void clear_and_report_parse_result_ctrs(int *parse_result_ctrs);
 
 

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <unordered_map>
 #include <vector>
+#include <queue>
 #include <mutex>
 #include <thread>
 #include <chrono>
@@ -26,6 +27,16 @@ std::unordered_map<u_int, Message*> message_map;
 // but a simple mutex works well enough (at our workloads anyway).
 std::mutex message_map_mutex;
 
+std::queue<struct Packet*> new_queue;
+std::mutex new_queue_mutex;
+std::queue<Message*> completed_queue;
+std::mutex completed_queue_mutex;
+
+std::condition_variable new_queue_cond;
+std::mutex new_queue_cond_m;
+std::condition_variable completed_queue_cond;
+std::mutex completed_queue_cond_m;
+
 uint64_t ms_from_timeval(struct timeval *ts) {
     return (uint64_t)ts->tv_sec * 1000 + (uint64_t)ts->tv_usec / 1000;
 }
@@ -38,17 +49,31 @@ uint64_t ms_from_timeval(struct timeval *ts) {
 void rasm_packet_handler(char *payload, int len, u_int seq, u_int ack, struct timeval ts) {
     struct Packet *pkt = (struct Packet *)malloc(sizeof(struct Packet) + len);
     pkt->len = len;
+    pkt->ack = ack;
+    pkt->ms_since_epoch = ms_from_timeval(&ts);
     pkt->seq = seq;
     pkt->used = false;
     memcpy(pkt->payload, payload, len);
 
+    /*
     message_map_mutex.lock();
-    Message *msg = message_map[ack];
+    update_message_map(pkt);
+    message_map_mutex.unlock();
+    */
+
+    new_queue_mutex.lock();
+    new_queue.push(pkt);
+    new_queue_mutex.unlock();
+    new_queue_cond.notify_one();
+}
+
+inline void update_message_map(struct Packet *pkt) {
+    Message *msg = message_map[pkt->ack];
     if (!msg) {
         msg = new Message();
     }
-    msg->ms_since_epoch = ms_from_timeval(&ts);
-    msg->ack = ack;
+    msg->ms_since_epoch = pkt->ms_since_epoch;
+    msg->ack = pkt->ack;
 
     if (msg->n_packets < MAX_PACKETS_PER_MSG - 1) {
         msg->packets[msg->n_packets] = pkt;
@@ -57,8 +82,7 @@ void rasm_packet_handler(char *payload, int len, u_int seq, u_int ack, struct ti
     } else {
         msg->truncated = true;
     }
-    message_map[ack] = msg;
-    message_map_mutex.unlock();
+    message_map[pkt->ack] = msg;
 }
 
 void rasm_free_message(Message *msg) {
@@ -200,6 +224,93 @@ int rr_select(fd_set socket_set, int maxfd, int *fds, int fd_count, int rr_index
     return -1;
 }
 
+/* Read packets from new_queue and put into message_map.
+ * Periodically check message_map for completed messages, remove them from map
+ * and put into completed_queue.
+ *
+ * Completed message == message which was not updated (added new packets) in MESSAGE_TIMEOUT ms.
+ *
+ * This function runs in the reassembly thread and does not return.
+*/
+void rasm_monitor(struct RasmSettings settings) {
+    std::chrono::milliseconds sleep_dur(MONITOR_PERIOD);
+    long lasttime = 0;
+    prctl(PR_SET_NAME, "cap rasm_monitor", 0, 0, 0);
+    printf("rasm_monitor started\n");
+
+    struct timeval now_tv;
+    gettimeofday(&now_tv, NULL);
+    uint64_t oldest_packet = ms_from_timeval(&now_tv);
+
+    while (1) {
+#ifdef SLEEP_IN_MONITOR
+        //std::this_thread::sleep_for(sleep_dur);
+        {
+            std::unique_lock<std::mutex> l(new_queue_cond_m);
+            new_queue_cond.wait(l);
+        }
+#endif
+        std::queue<struct Packet*> to_process;
+        gettimeofday(&now_tv, NULL);
+        uint64_t now_ms = ms_from_timeval(&now_tv);
+        uint64_t collect_ms = now_ms - MESSAGE_TIMEOUT;
+
+        // Join new packets
+        new_queue_mutex.lock();
+        while (!new_queue.empty()) {
+            struct Packet *p = new_queue.front();
+            new_queue.pop();
+            to_process.push(p);
+        }
+        new_queue_mutex.unlock();
+
+        while (!to_process.empty()) {
+            struct Packet *p = to_process.front();
+            to_process.pop();
+            update_message_map(p);
+        }
+
+        if (oldest_packet < collect_ms) {
+            std::queue<Message*> to_process;
+            uint64_t new_oldest = now_ms;
+            // Scan for completed messages.
+            // We should minimize locking duration as much as possible,
+            // so we only move completed messages to `to_process` vector
+            // for further processing.
+            for (auto it = message_map.cbegin(); it != message_map.cend(); ) {
+                uint64_t ms = it->second->ms_since_epoch;
+                if (ms < collect_ms) {
+                    to_process.push(it->second);
+                    message_map.erase(it++);
+                } else {
+                    if (ms < new_oldest) {
+                        new_oldest = ms;
+                    }
+                    ++it;
+                }
+            }
+            oldest_packet = new_oldest;
+
+
+            completed_queue_mutex.lock();
+            int n_pushed = 0;
+            while (!to_process.empty()) {
+                Message *m = to_process.front();
+                to_process.pop();
+                n_pushed++;
+                completed_queue.push(m);
+            }
+            completed_queue_mutex.unlock();
+
+            if (n_pushed > 0) {
+                completed_queue_cond.notify_one();
+            }
+
+        }
+
+    }
+}
+
 /* Periodically check message_map for completed messages, remove them from map
  * and transmit via socket pool.
  *
@@ -207,7 +318,7 @@ int rr_select(fd_set socket_set, int maxfd, int *fds, int fd_count, int rr_index
  *
  * This function runs in the reassembly thread and does not return.
 */
-void rasm_monitor(struct RasmSettings settings) {
+void rasm_writer(struct RasmSettings settings) {
     std::chrono::milliseconds sleep_dur(MONITOR_PERIOD);
     long lasttime = 0;
     int output_rps_factual = 0;
@@ -234,13 +345,15 @@ void rasm_monitor(struct RasmSettings settings) {
 
     while (1) {
 #ifdef SLEEP_IN_MONITOR
-        std::this_thread::sleep_for(sleep_dur);
+        //std::this_thread::sleep_for(sleep_dur);
+        {
+            std::unique_lock<std::mutex> l(completed_queue_cond_m);
+            completed_queue_cond.wait_for(l, sleep_dur);
+        }
 #endif
-        std::vector<Message*> to_process;
+        std::queue<Message*> to_process;
         struct timeval now_tv;
         gettimeofday(&now_tv, NULL);
-        uint64_t now_ms = ms_from_timeval(&now_tv);
-        uint64_t collect_ms = now_ms - MESSAGE_TIMEOUT;
 
         if (now_tv.tv_sec != lasttime) {
             lasttime = now_tv.tv_sec;
@@ -254,25 +367,19 @@ void rasm_monitor(struct RasmSettings settings) {
             truncated_messages = 0;
         }
 
-        // Scan for completed messages.
-        // We should minimize locking duration as much as possible,
-        // so we only move completed messages to `to_process` vector
-        // for further processing.
-        message_map_mutex.lock();
-        for (auto it = message_map.cbegin(); it != message_map.cend(); ) {
-            if (it->second->ms_since_epoch <= collect_ms) {
-                to_process.push_back(it->second);
-                output_rps_factual++;
-                message_map.erase(it++);
-            } else {
-                ++it;
-            }
+        completed_queue_mutex.lock();
+        while (!completed_queue.empty()) {
+            Message *m = completed_queue.front();
+            completed_queue.pop();
+            output_rps_factual++;
+            to_process.push(m);
         }
-        message_map_mutex.unlock();
+        completed_queue_mutex.unlock();
+
 
         while (!to_process.empty()) {
-            Message *msg = to_process.back();
-            to_process.pop_back();
+            Message *msg = to_process.front();
+            to_process.pop();
             for (int i = 0; i < settings.multiply; i++) {
                 if (settings.rps_limit > 0 && output_rps_written >= settings.rps_limit) {
                     continue;

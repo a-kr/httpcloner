@@ -9,7 +9,7 @@
 
 #define MAX_POOL_SIZE 32
 #define SLEEP_IN_MONITOR
-#define MONITOR_PERIOD 5
+#define MONITOR_PERIOD 50
 #define MESSAGE_TIMEOUT 100
 
 #endif

@@ -117,6 +117,67 @@ void start_sniffing(struct SniffSettings ss) {
     }
 }
 
+
+void sniffing_callback(u_char *user, const struct pcap_pkthdr *header, const u_char *data) {
+    struct SniffSettings *ss = (struct SniffSettings *)user;
+    pcap_t *descr = ss->descr;
+
+    static int count_ok = 0;
+    static int count_to = 0;
+    static int count_err = 0;
+
+    static long lasttime = 0;
+
+    static int parse_result_ctrs[PARSE_N_RESULTS] = {0,0,0,0,0,0};
+
+    char *pkt_payload;
+    int payload_len;
+    u_int ack;
+    u_int seq;
+
+    static struct pcap_stat pcapstat_prev;
+    static struct pcap_stat pcapstat_cur;
+    static struct pcap_stat pcapstat_delta;
+
+    //clear_and_report_parse_result_ctrs(parse_result_ctrs);
+
+
+    int pr = parse_packet(data, &pkt_payload, &ack, &seq, &payload_len);
+    parse_result_ctrs[pr]++;
+    if (pr == PARSE_OK && ss->pkt_handler) {
+        if (pkt_payload - (char *)data + payload_len > header->caplen) {
+            if (header->len > header->caplen) {
+                printf("Got a frame of size %d truncated to %d\n", header->len, header->caplen);
+            }
+            payload_len = header->caplen - (pkt_payload - (char *)data);
+        }
+        ss->pkt_handler(pkt_payload, payload_len, seq, ack, header->ts);
+    }
+
+    long t = header->ts.tv_sec;
+    if (t != lasttime) {
+        lasttime = t;
+        if (ss->metrics_handler) {
+            pcap_stats(descr, &pcapstat_cur);
+            pcapstat_delta.ps_recv = pcapstat_cur.ps_recv - pcapstat_prev.ps_recv;
+            pcapstat_delta.ps_drop = pcapstat_cur.ps_drop - pcapstat_prev.ps_drop;
+            pcapstat_prev = pcapstat_cur;
+            ss->metrics_handler(count_ok, count_to, count_err, parse_result_ctrs, &pcapstat_delta);
+        }
+        count_ok = 0;
+        count_to = 0;
+        count_err = 0;
+        clear_and_report_parse_result_ctrs(parse_result_ctrs);
+    }
+    count_ok++;
+}
+
+void start_sniffing_loop(struct SniffSettings ss) {
+    pcap_t *descr = setup_capture(ss.device, ss.filter);
+    ss.descr = descr;
+    pcap_loop(descr, -1, sniffing_callback, (u_char *)&ss);
+}
+
 inline int parse_packet(const u_char *packet, char **payload, u_int *ack, u_int *seq, int *payload_len) {
     struct sniff_ethernet *ethernet;  /* The ethernet header [1] */
     const struct sniff_ip *ip;              /* The IP header */

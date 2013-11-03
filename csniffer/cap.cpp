@@ -117,7 +117,9 @@ int main(int argc,char **argv)
     fprintf(stderr, "Sending metrics to statsd: %s\n", options[STATSD].arg);
 
     std::thread t_sniff(start_sniffing, ss);
+    //std::thread t_sniff(start_sniffing_loop, ss);
     std::thread t_walk(rasm_monitor, rs);
+    std::thread t_write(rasm_writer, rs);
     //t_walk.detach();
 
     t_sniff.join();

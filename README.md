@@ -9,6 +9,7 @@ Requirements
 
 * gcc >= 4.6.3
 * libpcap, libpcap-dev, libevent-dev
+* jemalloc (remove ``-ljemalloc`` from Makefile if you want to use standard malloc)
 * python 2.7
 * python packages:
     * gevent

@@ -9,6 +9,8 @@ typedef unsigned int u_int;
 
 // A TCP segment
 struct Packet {
+    uint64_t ms_since_epoch;
+    u_int ack;
     u_int seq;
     int len;
     bool used;
@@ -52,6 +54,7 @@ struct RasmSettings {
 
 void rasm_packet_handler(char *payload, int len, u_int seq, u_int ack, struct timeval ts);
 void rasm_monitor(struct RasmSettings settings);
+void rasm_writer(struct RasmSettings settings);
 
 
 #endif
