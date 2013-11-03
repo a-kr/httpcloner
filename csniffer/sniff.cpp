@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "sniff.h"
-#include "pktparse.h"
+#include "pktheaders.h"
 
 pcap_t *setup_capture(const char *device, const char *filter) {
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -72,6 +72,10 @@ void start_sniffing(struct SniffSettings ss) {
     u_int ack;
     u_int seq;
 
+    struct pcap_stat pcapstat_prev;
+    struct pcap_stat pcapstat_cur;
+    struct pcap_stat pcapstat_delta;
+
     clear_and_report_parse_result_ctrs(parse_result_ctrs);
 
     while (1) {
@@ -98,7 +102,11 @@ void start_sniffing(struct SniffSettings ss) {
         if (t != lasttime) {
             lasttime = t;
             if (ss.metrics_handler) {
-                ss.metrics_handler(count_ok, count_to, count_err, parse_result_ctrs);
+                pcap_stats(descr, &pcapstat_cur);
+                pcapstat_delta.ps_recv = pcapstat_cur.ps_recv - pcapstat_prev.ps_recv;
+                pcapstat_delta.ps_drop = pcapstat_cur.ps_drop - pcapstat_prev.ps_drop;
+                pcapstat_prev = pcapstat_cur;
+                ss.metrics_handler(count_ok, count_to, count_err, parse_result_ctrs, &pcapstat_delta);
             }
             count_ok = 0;
             count_to = 0;
@@ -109,3 +117,55 @@ void start_sniffing(struct SniffSettings ss) {
     }
 }
 
+inline int parse_packet(const u_char *packet, char **payload, u_int *ack, u_int *seq, int *payload_len) {
+    struct sniff_ethernet *ethernet;  /* The ethernet header [1] */
+    const struct sniff_ip *ip;              /* The IP header */
+    const struct sniff_tcp *tcp;            /* The TCP header */
+
+    int size_ip;
+    int size_tcp;
+    int size_payload;
+    
+    /* define ethernet header */
+    ethernet = (struct sniff_ethernet*)(packet);
+
+    if (ntohs(ethernet->ether_type) != ETHERTYPE_IP) {
+        return PARSE_WRONG_ETHERTYPE;
+    }
+    
+    /* define/compute ip header offset */
+    ip = (struct sniff_ip*)(packet + SIZE_ETHERNET);
+    size_ip = IP_HL(ip)*4;
+    if (size_ip < 20) {
+        return PARSE_BROKEN_IP_HEADER;
+    }
+    
+    /* determine protocol */    
+    if (ip->ip_p != IPPROTO_TCP) {
+        return PARSE_WRONG_IPPROTO;
+    }
+    
+    /*
+     *  OK, this packet is TCP.
+     */
+    
+    /* define/compute tcp header offset */
+    tcp = (struct sniff_tcp*)(packet + SIZE_ETHERNET + size_ip);
+    size_tcp = TH_OFF(tcp)*4;
+    if (size_tcp < 20) {
+        return PARSE_BROKEN_TCP_HEADER;
+    }
+    
+    /* define/compute tcp payload (segment) offset */
+    *payload = (char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
+    
+    /* compute tcp payload (segment) size */
+    *payload_len = ntohs(ip->ip_len) - (size_ip + size_tcp);
+    *ack = tcp->th_ack;
+    *seq = tcp->th_seq;
+
+    if (*payload_len <= 0) {
+        return PARSE_EMPTY_PAYLOAD;
+    }
+    return PARSE_OK;
+}

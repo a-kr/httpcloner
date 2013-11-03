@@ -233,7 +233,9 @@ void rasm_monitor(struct RasmSettings settings) {
     }
 
     while (1) {
+#ifdef SLEEP_IN_MONITOR
         std::this_thread::sleep_for(sleep_dur);
+#endif
         std::vector<Message*> to_process;
         struct timeval now_tv;
         gettimeofday(&now_tv, NULL);

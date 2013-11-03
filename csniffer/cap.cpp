@@ -13,7 +13,6 @@
 #include <netinet/ip.h>
 #include <string.h>
 
-#include "pktparse.h"
 #include "sniff.h"
 #include "requestasm.h"
 #include "options.h"
@@ -23,12 +22,14 @@
 StatsClient statsd_sniff;
 StatsClient statsd_rasm;
 
-void sniff_metrics_handler(int count_ok, int count_to, int count_err, int *parse_result_ctrs) {
+void sniff_metrics_handler(int count_ok, int count_to, int count_err, int *parse_result_ctrs, struct pcap_stat *pcapstat) {
     double la[3];
     getloadavg(la, 3);
-    fprintf(stderr, "Packets per second: %d, with payload: %d, timeouts %d, errors %d. load average %.2lf\n", count_ok, parse_result_ctrs[PARSE_OK], count_to, count_err, la[0]);
+    fprintf(stderr, "Packets per second: %d, with payload: %d, timeouts %d, errors %d. load average %.2lf, recv %u drop %u\n",
+         count_ok, parse_result_ctrs[PARSE_OK], count_to, count_err, la[0], pcapstat->ps_recv, pcapstat->ps_drop);
     statsd_sniff.start_message();
     statsd_sniff.incr("packets", count_ok);
+    statsd_sniff.incr("ps_drop", pcapstat->ps_drop);
     statsd_sniff.gauge("la", la[0]);
     statsd_sniff.finish_message();
 }
