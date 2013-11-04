@@ -71,33 +71,20 @@ public:
         this->q_front = new std::queue<T>();
     }
     virtual void put(T x) {
-        this->m.lock();
-        std::queue<T> *tmp = this->q;
-        tmp->push(x);
-        this->m.unlock();
-
-        this->condvar.notify_one();
+        this->q_front->push(x);
     }
-    virtual void putmany(std::queue<T> &xx) {
-        // first exchange
+    virtual void put_and_commit_if_N(T x, int n) {
+        this->q_front->push(x);
+        if (this->q_front->size() >= n) {
+            this->commit();
+        }
+    }
+    virtual void commit() {
         this->m.lock();
         std::queue<T> *tmp = this->q_front;
         this->q_front = this->q;
         this->q = tmp;
         this->m.unlock();
-
-        while (!xx.empty()) {
-            this->q_front->push(xx.front());
-            xx.pop();
-        }
-
-        // second exchange
-        this->m.lock();
-        tmp = this->q_front;
-        this->q_front = this->q;
-        this->q = tmp;
-        this->m.unlock();
-
         this->condvar.notify_one();
     }
     virtual void startwork() {
@@ -145,22 +132,16 @@ public:
         this->q_front = new std::queue<T>();
     }
     virtual void put(T x) {
-        auto q = std::atomic_exchange(&this->aq, this->q_front);
-        q->push(x);
-        this->q_front = std::atomic_exchange(&this->aq, q);
-
-        this->condvar.notify_one();
+        this->q_front->push(x);
     }
-    virtual void putmany(std::queue<T> &xx) {
-        auto q = std::atomic_exchange(&this->aq, this->q_front);
-
-        while (!xx.empty()) {
-            q->push(xx.front());
-            xx.pop();
+    virtual void put_and_commit_if_N(T x, int n) {
+        this->q_front->push(x);
+        if (this->q_front->size() >= n) {
+            this->commit();
         }
-
-        this->q_front = std::atomic_exchange(&this->aq, q);
-
+    }
+    virtual void commit() {
+        this->q_front = std::atomic_exchange(&this->aq, this->q_front);
         this->condvar.notify_one();
     }
     virtual void startwork() {

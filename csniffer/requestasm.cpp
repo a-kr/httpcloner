@@ -28,13 +28,12 @@ std::unordered_map<u_int, Message*> message_map;
 // but a simple mutex works well enough (at our workloads anyway).
 std::mutex message_map_mutex;
 
-SwitchingQueue<struct Packet *> new_queue;
-SwitchingQueue<Message *> completed_queue;
+AtomicSwitchingQueue<struct Packet *> new_queue;
+AtomicSwitchingQueue<Message *> completed_queue;
 
 uint64_t ms_from_timeval(struct timeval *ts) {
     return (uint64_t)ts->tv_sec * 1000 + (uint64_t)ts->tv_usec / 1000;
 }
-
 
 /* We just sniffed one packet. Find the message it belongs to and store it into message_map.
  * 
@@ -49,7 +48,7 @@ void rasm_packet_handler(char *payload, int len, u_int seq, u_int ack, struct ti
     pkt->used = false;
     memcpy(pkt->payload, payload, len);
 
-    new_queue.put(pkt);
+    new_queue.put_and_commit_if_N(pkt, 100);
 }
 
 inline void update_message_map(struct Packet *pkt) {
@@ -248,7 +247,7 @@ void rasm_monitor(struct RasmSettings settings) {
         }
 
         if (oldest_packet < collect_ms) {
-            std::queue<Message*> to_process;
+            //std::queue<Message*> to_process;
             uint64_t new_oldest = now_ms;
             // Scan for completed messages.
             // We should minimize locking duration as much as possible,
@@ -257,7 +256,8 @@ void rasm_monitor(struct RasmSettings settings) {
             for (auto it = message_map.cbegin(); it != message_map.cend(); ) {
                 uint64_t ms = it->second->ms_since_epoch;
                 if (ms < collect_ms) {
-                    to_process.push(it->second);
+                    //to_process.push(it->second);
+                    completed_queue.put(it->second);
                     message_map.erase(it++);
                 } else {
                     if (ms < new_oldest) {
@@ -269,7 +269,8 @@ void rasm_monitor(struct RasmSettings settings) {
             oldest_packet = new_oldest;
 
 
-            completed_queue.putmany(to_process);
+            //completed_queue.putmany(to_process);
+            completed_queue.commit();
         }
 
     }
