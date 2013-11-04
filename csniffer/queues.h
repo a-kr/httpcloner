@@ -63,10 +63,12 @@ private:
     std::mutex condvar_m;
     std::queue<T> *q;
     std::queue<T> *q_back;
+    std::queue<T> *q_front;
 public:
     SwitchingQueue() {
         this->q = new std::queue<T>();
         this->q_back = new std::queue<T>();
+        this->q_front = new std::queue<T>();
     }
     virtual void put(T x) {
         this->m.lock();
@@ -77,12 +79,23 @@ public:
         this->condvar.notify_one();
     }
     virtual void putmany(std::queue<T> &xx) {
+        // first exchange
         this->m.lock();
-        std::queue<T> *tmp = this->q;
+        std::queue<T> *tmp = this->q_front;
+        this->q_front = this->q;
+        this->q = tmp;
+        this->m.unlock();
+
         while (!xx.empty()) {
-            tmp->push(xx.front());
+            this->q_front->push(xx.front());
             xx.pop();
         }
+
+        // second exchange
+        this->m.lock();
+        tmp = this->q_front;
+        this->q_front = this->q;
+        this->q = tmp;
         this->m.unlock();
 
         this->condvar.notify_one();
@@ -93,6 +106,65 @@ public:
         this->q = this->q_back;
         this->q_back = tmp;
         this->m.unlock();
+    }
+    virtual T get() {
+        T x;
+        x = this->q_back->front();
+        this->q_back->pop();
+        return x;
+    }
+    virtual void endwork() {
+    }
+    virtual void wait() {
+        std::unique_lock<std::mutex> lk(this->condvar_m);
+        this->condvar.wait(lk);
+    }
+    virtual void wait_for(std::chrono::milliseconds &d) {
+        std::unique_lock<std::mutex> lk(this->condvar_m);
+        this->condvar.wait_for(lk, d);
+    }
+    virtual bool empty() {
+        bool e;
+        e = this->q_back->empty();
+        return e;
+    }
+};
+
+template<typename T> class AtomicSwitchingQueue : public Queue<T> {
+private:
+    std::condition_variable condvar;
+    std::mutex condvar_m;
+    std::atomic<std::queue<T> *> aq;
+    std::queue<T> *q_back;
+    std::queue<T> *q_front;
+public:
+    AtomicSwitchingQueue() {
+        auto q = new std::queue<T>();
+        this->aq.store(q);
+        this->q_back = new std::queue<T>();
+        this->q_front = new std::queue<T>();
+    }
+    virtual void put(T x) {
+        auto q = std::atomic_exchange(&this->aq, this->q_front);
+        q->push(x);
+        this->q_front = std::atomic_exchange(&this->aq, q);
+
+        this->condvar.notify_one();
+    }
+    virtual void putmany(std::queue<T> &xx) {
+        auto q = std::atomic_exchange(&this->aq, this->q_front);
+
+        while (!xx.empty()) {
+            q->push(xx.front());
+            xx.pop();
+        }
+
+        this->q_front = std::atomic_exchange(&this->aq, q);
+
+        this->condvar.notify_one();
+    }
+    virtual void startwork() {
+        this->q_back = std::atomic_exchange(&this->aq, this->q_back);
     }
     virtual T get() {
         T x;
