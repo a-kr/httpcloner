@@ -9,16 +9,7 @@
 #include <functional>
 #include <condition_variable>
 
-template<typename T> class Queue {
-public:
-    virtual void put(T x) = 0;
-    virtual void startwork() = 0;
-    virtual T get() = 0;
-    virtual void endwork() = 0;
-    virtual void wait() = 0;
-    virtual bool empty() = 0;
-};
-
+/*
 template<typename T> class LockingQueue : public Queue<T> {
 private:
     std::mutex m;
@@ -55,8 +46,9 @@ public:
     }
 };
 
+*/
 
-template<typename T> class SwitchingQueue : public Queue<T> {
+template<typename T> class SwitchingQueue {
 private:
     std::mutex m;
     std::condition_variable condvar;
@@ -70,16 +62,16 @@ public:
         this->q_back = new std::queue<T>();
         this->q_front = new std::queue<T>();
     }
-    virtual void put(T x) {
+    void put(T x) {
         this->q_front->push(x);
     }
-    virtual void put_and_commit_if_N(T x, int n) {
+    void put_and_commit_if_N(T x, int n) {
         this->q_front->push(x);
         if (this->q_front->size() >= n) {
             this->commit();
         }
     }
-    virtual void commit() {
+    void commit() {
         this->m.lock();
         std::queue<T> *tmp = this->q_front;
         this->q_front = this->q;
@@ -87,37 +79,37 @@ public:
         this->m.unlock();
         this->condvar.notify_one();
     }
-    virtual void startwork() {
+    void startwork() {
         this->m.lock();
         std::queue<T> *tmp = this->q;
         this->q = this->q_back;
         this->q_back = tmp;
         this->m.unlock();
     }
-    virtual T get() {
+    T get() {
         T x;
         x = this->q_back->front();
         this->q_back->pop();
         return x;
     }
-    virtual void endwork() {
+    void endwork() {
     }
-    virtual void wait() {
+    void wait() {
         std::unique_lock<std::mutex> lk(this->condvar_m);
         this->condvar.wait(lk);
     }
-    virtual void wait_for(std::chrono::milliseconds &d) {
+    void wait_for(std::chrono::milliseconds &d) {
         std::unique_lock<std::mutex> lk(this->condvar_m);
         this->condvar.wait_for(lk, d);
     }
-    virtual bool empty() {
+    bool empty() {
         bool e;
         e = this->q_back->empty();
         return e;
     }
 };
 
-template<typename T> class AtomicSwitchingQueue : public Queue<T> {
+template<typename T> class AtomicSwitchingQueue {
 private:
     std::condition_variable condvar;
     std::mutex condvar_m;
@@ -131,39 +123,39 @@ public:
         this->q_back = new std::queue<T>();
         this->q_front = new std::queue<T>();
     }
-    virtual void put(T x) {
+    void put(T x) {
         this->q_front->push(x);
     }
-    virtual void put_and_commit_if_N(T x, int n) {
+    void put_and_commit_if_N(T x, int n) {
         this->q_front->push(x);
         if (this->q_front->size() >= n) {
             this->commit();
         }
     }
-    virtual void commit() {
+    void commit() {
         this->q_front = std::atomic_exchange(&this->aq, this->q_front);
         this->condvar.notify_one();
     }
-    virtual void startwork() {
+    void startwork() {
         this->q_back = std::atomic_exchange(&this->aq, this->q_back);
     }
-    virtual T get() {
+    T get() {
         T x;
         x = this->q_back->front();
         this->q_back->pop();
         return x;
     }
-    virtual void endwork() {
+    void endwork() {
     }
-    virtual void wait() {
+    void wait() {
         std::unique_lock<std::mutex> lk(this->condvar_m);
         this->condvar.wait(lk);
     }
-    virtual void wait_for(std::chrono::milliseconds &d) {
+    void wait_for(std::chrono::milliseconds &d) {
         std::unique_lock<std::mutex> lk(this->condvar_m);
         this->condvar.wait_for(lk, d);
     }
-    virtual bool empty() {
+    bool empty() {
         bool e;
         e = this->q_back->empty();
         return e;

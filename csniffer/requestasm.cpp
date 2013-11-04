@@ -48,7 +48,7 @@ void rasm_packet_handler(char *payload, int len, u_int seq, u_int ack, struct ti
     pkt->used = false;
     memcpy(pkt->payload, payload, len);
 
-    new_queue.put_and_commit_if_N(pkt, 100);
+    new_queue.put_and_commit_if_N(pkt, 10);
 }
 
 inline void update_message_map(struct Packet *pkt) {
