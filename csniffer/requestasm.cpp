@@ -16,6 +16,7 @@
 #include <sys/select.h>
 #include <fcntl.h>
 #include "requestasm.h"
+#include "queues.h"
 
 // Maps TCP ack numbers to messages. Message = 1 or more packets.
 // Using ack number as a key works because while the client is sending the request,
@@ -27,15 +28,8 @@ std::unordered_map<u_int, Message*> message_map;
 // but a simple mutex works well enough (at our workloads anyway).
 std::mutex message_map_mutex;
 
-std::queue<struct Packet*> new_queue;
-std::mutex new_queue_mutex;
-std::queue<Message*> completed_queue;
-std::mutex completed_queue_mutex;
-
-std::condition_variable new_queue_cond;
-std::mutex new_queue_cond_m;
-std::condition_variable completed_queue_cond;
-std::mutex completed_queue_cond_m;
+SwitchingQueue<struct Packet *> new_queue;
+SwitchingQueue<Message *> completed_queue;
 
 uint64_t ms_from_timeval(struct timeval *ts) {
     return (uint64_t)ts->tv_sec * 1000 + (uint64_t)ts->tv_usec / 1000;
@@ -55,16 +49,7 @@ void rasm_packet_handler(char *payload, int len, u_int seq, u_int ack, struct ti
     pkt->used = false;
     memcpy(pkt->payload, payload, len);
 
-    /*
-    message_map_mutex.lock();
-    update_message_map(pkt);
-    message_map_mutex.unlock();
-    */
-
-    new_queue_mutex.lock();
-    new_queue.push(pkt);
-    new_queue_mutex.unlock();
-    new_queue_cond.notify_one();
+    new_queue.put(pkt);
 }
 
 inline void update_message_map(struct Packet *pkt) {
@@ -233,7 +218,6 @@ int rr_select(fd_set socket_set, int maxfd, int *fds, int fd_count, int rr_index
  * This function runs in the reassembly thread and does not return.
 */
 void rasm_monitor(struct RasmSettings settings) {
-    std::chrono::milliseconds sleep_dur(MONITOR_PERIOD);
     long lasttime = 0;
     prctl(PR_SET_NAME, "cap rasm_monitor", 0, 0, 0);
     printf("rasm_monitor started\n");
@@ -243,26 +227,19 @@ void rasm_monitor(struct RasmSettings settings) {
     uint64_t oldest_packet = ms_from_timeval(&now_tv);
 
     while (1) {
-#ifdef SLEEP_IN_MONITOR
-        //std::this_thread::sleep_for(sleep_dur);
-        {
-            std::unique_lock<std::mutex> l(new_queue_cond_m);
-            new_queue_cond.wait(l);
-        }
-#endif
+        new_queue.wait();
         std::queue<struct Packet*> to_process;
         gettimeofday(&now_tv, NULL);
         uint64_t now_ms = ms_from_timeval(&now_tv);
         uint64_t collect_ms = now_ms - MESSAGE_TIMEOUT;
 
         // Join new packets
-        new_queue_mutex.lock();
+        new_queue.startwork();
         while (!new_queue.empty()) {
-            struct Packet *p = new_queue.front();
-            new_queue.pop();
+            struct Packet *p = new_queue.get();
             to_process.push(p);
         }
-        new_queue_mutex.unlock();
+        new_queue.endwork();
 
         while (!to_process.empty()) {
             struct Packet *p = to_process.front();
@@ -292,20 +269,7 @@ void rasm_monitor(struct RasmSettings settings) {
             oldest_packet = new_oldest;
 
 
-            completed_queue_mutex.lock();
-            int n_pushed = 0;
-            while (!to_process.empty()) {
-                Message *m = to_process.front();
-                to_process.pop();
-                n_pushed++;
-                completed_queue.push(m);
-            }
-            completed_queue_mutex.unlock();
-
-            if (n_pushed > 0) {
-                completed_queue_cond.notify_one();
-            }
-
+            completed_queue.putmany(to_process);
         }
 
     }
@@ -344,13 +308,7 @@ void rasm_writer(struct RasmSettings settings) {
     }
 
     while (1) {
-#ifdef SLEEP_IN_MONITOR
-        //std::this_thread::sleep_for(sleep_dur);
-        {
-            std::unique_lock<std::mutex> l(completed_queue_cond_m);
-            completed_queue_cond.wait_for(l, sleep_dur);
-        }
-#endif
+        completed_queue.wait_for(sleep_dur);
         std::queue<Message*> to_process;
         struct timeval now_tv;
         gettimeofday(&now_tv, NULL);
@@ -367,14 +325,13 @@ void rasm_writer(struct RasmSettings settings) {
             truncated_messages = 0;
         }
 
-        completed_queue_mutex.lock();
+        completed_queue.startwork();
         while (!completed_queue.empty()) {
-            Message *m = completed_queue.front();
-            completed_queue.pop();
+            Message *m = completed_queue.get();
             output_rps_factual++;
             to_process.push(m);
         }
-        completed_queue_mutex.unlock();
+        completed_queue.endwork();
 
 
         while (!to_process.empty()) {

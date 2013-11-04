@@ -6,9 +6,9 @@ program_CXX_OBJS := ${program_CXX_SRCS:.cpp=.o}
 program_OBJS := $(program_C_OBJS) $(program_CXX_OBJS)
 program_INCLUDE_DIRS :=
 program_LIBRARY_DIRS :=
-program_LIBRARIES := pcap
+program_LIBRARIES := pcap jemalloc
 
-CPPFLAGS += -O2 -std=c++0x -pthread -ljemalloc -g $(foreach includedir,$(program_INCLUDE_DIRS),-I$(includedir))
+CPPFLAGS += -O2 -std=c++0x -pthread -g $(foreach includedir,$(program_INCLUDE_DIRS),-I$(includedir))
 LDFLAGS += $(foreach librarydir,$(program_LIBRARY_DIRS),-L$(librarydir))
 LIBS := $(foreach library,$(program_LIBRARIES),-l$(library))
 
