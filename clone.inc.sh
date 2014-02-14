@@ -11,7 +11,7 @@ function kill_old_replays() {
     if [ -f $FILE_WITH_PIDS ]
     then
         set +e
-        cat $FILE_WITH_PIDS | xargs kill
+        cat $FILE_WITH_PIDS | xargs kill >/dev/null 2>/dev/null
         set -e
     fi
 }
@@ -47,5 +47,8 @@ function start_cap() {
 }
 
 kill_old_replays
+
+trap 'kill_old_replays' EXIT HUP INT TERM
+
 start_replays
 start_cap

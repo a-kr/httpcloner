@@ -22,7 +22,7 @@ THREADS=60
 
 # string to insert in unix socket names to avoid conflicts with
 # other traffic cloning projects
-PROJECT=logger
+PROJECT=example
 
 # [ traffic source and destination, limits ] ==========================
 
